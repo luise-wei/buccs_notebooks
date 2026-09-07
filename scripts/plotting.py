@@ -7,6 +7,7 @@ import numpy as np
 from pyproj import Transformer
 import cmcrameri.cm as cmc
 import rasterio
+import shap
 
 
 
@@ -146,4 +147,133 @@ def quick_raster_plot(city: str, raster_type: str):
     # plt.imshow(band, cmap=lcm, norm=norm)
     plt.imshow(band, cmap=cmap, norm=norm if raster_type in ("dtm", "tcd") else None)
     plt.colorbar()
+    plt.show()
+
+
+def plot_scatter_and_residuals(X_val, y_obs, y_model, length_name, start_time, station, model, target):
+    """Creats a scatterplot for observations and predictions and a diurnal residual plot
+
+    Args:
+        X_val (pd.DataFrame): validation input data
+        y_obs (np.array): validation output value
+        y_model (np.array): predicted values
+        length_name (str): length of training window
+        start_time (datetime): start time of trainig window
+        station (str): name of the station trained on
+        model (str): name of the model
+        target (str): the target variable
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Scatter plot with 1:1 line
+    ax1.scatter(y_obs, y_model, alpha=0.3, s=10)
+    max_val = max(y_obs.max(), y_model.max())
+    ax1.plot([y_obs.min(), max_val], [y_obs.min(), max_val],
+            'r--', label='1:1 line')
+    ax1.set_xlabel(f"Observed {target} (°C)")
+    ax1.set_ylabel(f"Predicted {target} (°C)")
+    ax1.set_title(f"Observed vs Predicted {target}")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Residuals vs hour of day
+    residuals = y_model - y_obs
+    hours = X_val["datetime_utc"].dt.hour.values
+    ax2.scatter(hours, residuals, alpha=0.3, s=10)
+    ax2.axhline(y=0, color='r', linestyle='--')
+    ax2.set_xlabel("Hour of Day")
+    ax2.set_ylabel("Residuals (°C)")
+    ax2.set_title("Residuals vs Hour of Day")
+    ax2.grid(True, alpha=0.3)
+
+    plt.suptitle(f"History: {length_name} starting from {start_time} at station {station} with model {model} and target {target}")
+
+    plt.tight_layout()
+    plt.show()
+    plt.close()
+
+
+def plot_stats(results, station, model, target):
+    """Crate a trio of stats per histor lengths, contained in results
+
+    Args:
+        results (dict): results of RMSE, R2 and Bias per training length
+        station (str):  name of the station trained on
+        model (str):  name of the model
+        target (str): the target variable
+    """
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 3, 1)
+    lengths = list(results.keys())
+    means = [np.mean(results[l]['rmse']) for l in lengths]
+    stds = [np.std(results[l]['rmse']) for l in lengths]
+    plt.errorbar(lengths, means, yerr=stds, fmt='o-', capsize=5, color='blue')
+    plt.title('RMSE')
+    plt.ylabel('RMSE (°C)')
+    plt.xticks(rotation=45)
+    plt.grid(True)
+
+    # Plot R2
+    plt.subplot(1, 3, 2)
+    means = [np.mean(results[l]['r2']) for l in lengths]
+    stds = [np.std(results[l]['r2']) for l in lengths]
+    plt.errorbar(lengths, means, yerr=stds, fmt='o-', capsize=5, color='green')
+    plt.title('R2')
+    plt.xticks(rotation=45)
+    plt.grid(True)
+
+    # Plot Bias
+    plt.subplot(1, 3, 3)
+    means = [np.mean(results[l]['bias']) for l in lengths]
+    stds = [np.std(results[l]['bias']) for l in lengths]
+    plt.errorbar(lengths, means, yerr=stds, fmt='o-', capsize=5, color='red')
+    plt.title('Bias')
+    plt.xticks(rotation=45)
+    plt.grid(True)
+
+    plt.suptitle(f"Model {model} | Station {station} | target {target}")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_importance(sorted_features, sorted_importances):
+    cmap = cmc.batlow
+    # sample two colors away from extremes for clarity
+    predicted_color = cmap(0.7)
+
+    # Create the horizontal bar plot
+    plt.figure(figsize=(12, max(8, len(sorted_features) * 0.3)))
+    bars = plt.barh(range(len(sorted_features)), sorted_importances,
+                    color=predicted_color,
+                    #  alpha=0.7
+                    )
+
+    # Customize the plot
+    plt.yticks(range(len(sorted_features)), sorted_features)
+    plt.xlabel('Total gain')
+    plt.ylabel('Features')
+    # plt.title('XGBoost Feature Importances')
+    plt.grid(axis='x', alpha=0.3)
+
+        # # Add value labels on bars
+        # for i, (bar, v) in enumerate(zip(bars, sorted_importances)):
+        #     plt.text(v + max(sorted_importances) * 0.01, i, f'{v:.3f}',
+        #             va='center', fontsize=9)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_shap_summary(shap_values, X_val_sel):
+
+    shap.summary_plot(
+        shap_values, X_val_sel,
+        feature_names=X_val_sel.columns.tolist(),
+        max_display=10,
+        cmap=cmc.vik,
+        show=False
+    )
+    plt.title(f'Feature impacts across all val samples')
+    plt.tight_layout()
+    # plt.savefig(f'../Plots/shap/{SPLIT_TYPE_RUN}/beeswarm_{target_city}.png', dpi=150, bbox_inches='tight')
     plt.show()

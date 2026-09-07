@@ -1,9 +1,12 @@
+import shap
+import cmcrameri.cm as cmc
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
 import xgboost as xgb
 import statsmodels.api as sm
 from sklearn.metrics import r2_score, mean_squared_error
+import datetime
 
 # ---------------------------------------------------------------------------------------------#
 # ---------------------------------------- SPLITTING ------------------------------------------#
@@ -92,6 +95,28 @@ def split_data(X, y, mode = "random", quadrant = "se", spatio_temporal = False):
         return X_train, X_val, y_train, y_val
 
 
+def prepare_station_training_data(X, y, city:str, history_length=7 * 24, start_date_lag=0):
+
+        if city=="dortmund":
+            split_at_days = 35  # Approximate 1 month before end
+
+        if city=="ghent":
+            split_at_days = 365  # Approximate 1 year before end
+
+        # split data based on city-specific splits
+        split_date = X['datetime_utc'].max() - datetime.timedelta(days=split_at_days)
+        train_df = X[X['datetime_utc'] <= split_date]
+        train_df_y = y.iloc[train_df.index]
+        X_val = X[X['datetime_utc'] > split_date]
+        y_val = y[X['datetime_utc'] > split_date]
+
+        # extract history length (requires correct input)
+        X_train = train_df.iloc[start_date_lag:start_date_lag+history_length]
+        y_train = train_df_y.iloc[start_date_lag:start_date_lag+history_length]
+
+        return X_train, X_val, y_train, y_val
+
+
 # ---------------------------------------------------------------------------------------------#
 # ------------------------------------- FEATURE SELECTION -------------------------------------#
 # ---------------------------------------------------------------------------------------------#
@@ -123,14 +148,14 @@ def val_r2_recon(X_tr, y_tr, X_val, y_val, target, cols, r2_resid = False):
     """Fit on train (residual target), predict val, reconstruct absolute temp, R² on that."""
     if not cols:
         return -np.inf
-    
+
     # fit an Ordinary Least Squares linear regression with response var = y_tr and 
     # explanatory vars = X_tr[cols], cols being passed through the function
     # we need to add a column of 1s (add_constant) => that is the intercept for the regression
     model = sm.OLS(y_tr, sm.add_constant(X_tr[cols])).fit()
 
     # we predict on Xval using the fitted model
-    pred_resid = model.predict(sm.add_constant(X_val[cols], has_constant="add"))
+    pred_resid = model.predict(sm.add_constant(X_val[cols]))  # TODO Is param has_constant="add" required?
 
     add_back = X_val["t2m_corr"].values if target == "temp_diff" else 0
 
@@ -289,3 +314,59 @@ def train_model(X_train, X_val, y_train, y_val, model_type):
         print(model.params.sort_values(key=abs, ascending=False))
         
         return y_pred, model
+
+
+def explain_model(model, X_train, X_val):
+    """Calculate SHAP values and plot summary
+
+    Args:
+        model (): a model
+        X_train (pd.DataFrame): training data set
+        X_val (pd.DataFrame): validation data set
+
+    Returns:
+        np.array: shap values
+        pd.DataFrame: data to derive shap values
+    """
+
+    X_tr_c  = sm.add_constant(X_train)
+    X_val_c = sm.add_constant(X_val, has_constant="add")
+
+    # Define a prediction function for SHAP
+    def predict_wrapper(X, model=model):
+        return model.predict(sm.add_constant(X))
+
+    # Create KernelExplainer
+    explainer = shap.KernelExplainer(predict_wrapper, shap.sample(X_tr_c, 50))
+    shap_values = explainer.shap_values(X_val_c.iloc[0:100])  # Use subset for speed
+
+    return shap_values, X_val_c.iloc[0:100]
+
+
+def calc_importance(model):
+    """Calculate feature importance for model
+
+    Args:
+        model: a trained model
+
+    Returns:
+        sorted_features: list of features, sorted by importance
+        sorted_importances (np.array): array with float feature importances
+    """
+    # For models trained with xgb.train() and DMatrix with feature_names
+    feature_names = model.feature_names
+    # Get importance scores (you can choose different types)
+    importance_dict = model.get_score(importance_type='total_gain')  # or 'gain', 'cover'
+
+    # Convert to arrays, ensuring order matches feature_names
+    importances = np.array([importance_dict.get(fname, 0.0) for fname in feature_names])
+
+    sorted_indices = np.argsort(importances)
+    sorted_importances = importances[sorted_indices]
+    sorted_features = [feature_names[i] for i in sorted_indices]
+
+    print("\nFeature importances (sorted):")
+    for feat, val in zip(sorted_features[::-1], sorted_importances[::-1]):
+        print(f"{feat}: {val:.6f}")
+
+    return sorted_features, sorted_importances
