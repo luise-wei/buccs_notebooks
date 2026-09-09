@@ -6,6 +6,7 @@ import numpy as np
 import xgboost as xgb
 import statsmodels.api as sm
 from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import datetime
 
 # ---------------------------------------------------------------------------------------------#
@@ -95,6 +96,56 @@ def split_data(X, y, mode = "random", quadrant = "se", spatio_temporal = False):
         return X_train, X_val, y_train, y_val
 
 
+def scale_data(target, X_train_sel,X_val_sel, X_val, y_val):
+    """Scales data with MinMax or StandardScaler if applicable
+
+    Args:
+        target (str): the target column
+        X_train_sel (pd.DataFrame): The training set
+        X_val_sel (_type_): The validation set
+
+    Returns:
+        _type_: _description_
+    """
+    # Save unscaled ERA5-Land input bc it's needed for error metrics
+    if target == "t2m_corr":
+        t2m_corr = y_val
+    else:
+        t2m_corr = X_val["t2m_corr"]
+
+    # scale all predicors except for the temporal predictors (already -1 to 1)
+    cyclical = {"tod_sin", "tod_cos", "doy_sin", "doy_cos"}
+    minmax_cols = [c for c in ["ssrd_deac", "tp_deac"] if c in X_train_sel.columns]
+
+    # select the predictors to be scaled
+    std_cols = [c for c in X_train_sel.columns
+                if c not in cyclical and c not in minmax_cols]
+
+    
+    X_train_sel = X_train_sel.copy()
+    X_val_sel = X_val_sel.copy()
+
+    # use sklearn's StandardScaler: scales by sample mean and variance
+    std_scaler  = StandardScaler()
+    mm_scaler = MinMaxScaler()
+
+    # fit the mean and variance from the training data, scale the training data
+    if len(std_cols) > 0:
+        X_train_sel[std_cols] = std_scaler.fit_transform(X_train_sel[std_cols])
+    if len(minmax_cols) > 0:
+        X_train_sel[minmax_cols] = mm_scaler.fit_transform(X_train_sel[minmax_cols])
+    else:
+        print("Info: No minmax_cols available")
+
+    # apply the training fit to scale the validation data
+    if len(std_cols) > 0:
+        X_val_sel[std_cols]   = std_scaler.transform(X_val_sel[std_cols])
+    if len(minmax_cols) > 0:
+        X_val_sel[minmax_cols] = mm_scaler.transform(X_val_sel[minmax_cols])
+    
+    return t2m_corr, X_train_sel, X_val_sel, minmax_cols, std_cols, mm_scaler, std_scaler
+
+
 def prepare_station_training_data(X, y, city:str, history_length=7 * 24, start_date_lag=0):
 
         if city=="dortmund":
@@ -113,6 +164,10 @@ def prepare_station_training_data(X, y, city:str, history_length=7 * 24, start_d
         # extract history length (requires correct input)
         X_train = train_df.iloc[start_date_lag:start_date_lag+history_length]
         y_train = train_df_y.iloc[start_date_lag:start_date_lag+history_length]
+
+        # make sure we drop station_id as we don't want strings in our predictors
+        X_train = X_train.drop(columns=["station_id"]).copy()
+        X_val = X_val.drop(columns=["station_id"]).copy()
 
         return X_train, X_val, y_train, y_val
 
@@ -314,6 +369,9 @@ def train_model(X_train, X_val, y_train, y_val, model_type):
         print(model.params.sort_values(key=abs, ascending=False))
         
         return y_pred, model
+
+    elif model == "randomforest":
+        raise NotImplementedError()
 
 
 def explain_model(model, X_train, X_val):
