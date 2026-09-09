@@ -18,7 +18,8 @@ cmcrameri
 sklearn
 rasterio
 xgboost
-
+matplotlib-scalebar
+seaborn
 
 ## Data
 
